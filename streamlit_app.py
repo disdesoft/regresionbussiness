@@ -1,24 +1,22 @@
-
 import io
 import numpy as np
 import pandas as pd
 import streamlit as st
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score
 import matplotlib.pyplot as plt
 from pathlib import Path
 
-# Compatibilidad para RMSE sin warnings
-try:
-    from sklearn.metrics import root_mean_squared_error as _rmse_fn
-    def RMSE(y_true, y_pred):
-        return _rmse_fn(y_true, y_pred)
-except Exception:
-    from sklearn.metrics import mean_squared_error as _mse_fn
-    import numpy as np
-    def RMSE(y_true, y_pred):
-        return np.sqrt(_mse_fn(y_true, y_pred))
+# --- Métricas sin sklearn ---
+def RMSE(y_true, y_pred):
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+    return float(np.sqrt(np.mean((y_true - y_pred) ** 2)))
 
+def R2(y_true, y_pred):
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+    ss_res = np.sum((y_true - y_pred) ** 2)
+    ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
+    return float(1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
 
 st.set_page_config(page_title="Inscripciones vs Ventas por Asesor", layout="wide")
 st.markdown(
@@ -44,6 +42,7 @@ def find_cols(patterns, columns):
     return found
 
 def infer_flags(df, col_ins_fecha, col_ins_valor, col_ins_num, col_matr_fecha, col_matr_flag, cols_valores_recibos):
+    # Inscripción
     if col_ins_fecha and col_ins_fecha in df.columns:
         ins_flag = df[col_ins_fecha].notna()
     elif col_ins_valor and col_ins_valor in df.columns:
@@ -53,6 +52,7 @@ def infer_flags(df, col_ins_fecha, col_ins_valor, col_ins_num, col_matr_fecha, c
     else:
         ins_flag = pd.Series(False, index=df.index)
 
+    # Venta
     if col_matr_flag and col_matr_flag in df.columns:
         v = df[col_matr_flag].astype(str).str.strip().str.lower()
         venta_flag = v.isin(["si", "sí", "1", "true", "verdadero", "x", "matriculado"])
@@ -65,6 +65,7 @@ def infer_flags(df, col_ins_fecha, col_ins_valor, col_ins_num, col_matr_fecha, c
         venta_flag = pd.Series(False, index=df.index)
     return ins_flag.fillna(False), venta_flag.fillna(False)
 
+# --- Sidebar datos ---
 st.sidebar.header("1) Datos")
 use_included = st.sidebar.checkbox("Usar base incluida", value=True, help="Usa el archivo base integrado en el proyecto.")
 uploaded = st.sidebar.file_uploader("O sube otra base (.xlsx)", type=["xlsx"])
@@ -94,6 +95,7 @@ if data_source:
     df = sheets[hoja].copy()
     cols = list(df.columns)
 
+    # --- Mapeo ---
     st.sidebar.header("2) Mapeo de columnas")
     sugerido_asesor = find_cols(["asesor", "coordinador", "vendedor", "gestor"], cols)
     sugerido_ins_fecha = find_cols(["fecha de pago inscrip", "pago inscrip"], cols)
@@ -131,6 +133,7 @@ if data_source:
     col_matr_fecha = None if col_matr_fecha == "(ninguna)" else col_matr_fecha
     col_matr_flag = None if col_matr_flag == "(ninguna)" else col_matr_flag
 
+    # --- CTA ---
     st.subheader("Ejecución")
     uplift = st.slider("Escenario de crecimiento de inscripciones (%)", min_value=0, max_value=100, value=20, step=5)
     st.markdown('<div class="big-cta">', unsafe_allow_html=True)
@@ -206,15 +209,14 @@ if data_source:
                 mime="text/csv"
             )
         else:
-            X = agg[["inscripciones"]].astype(float).values
+            # --- Regresión con numpy.polyfit ---
+            X = agg["inscripciones"].astype(float).values
             y = agg["ventas"].astype(float).values
-            model = LinearRegression().fit(X, y)
-            y_pred = model.predict(X)
+            slope, intercept = np.polyfit(X, y, deg=1)
+            y_pred = slope * X + intercept
 
-            r2 = r2_score(y, y_pred)
+            r2 = R2(y, y_pred)
             rmse = RMSE(y, y_pred)
-            slope = float(model.coef_[0])
-            intercept = float(model.intercept_)
 
             st.subheader("Resultados de la regresión lineal")
             m1, m2, m3, m4 = st.columns(4)
@@ -225,8 +227,8 @@ if data_source:
 
             fig1, ax1 = plt.subplots()
             ax1.scatter(agg["inscripciones"], agg["ventas"])
-            x_line = np.linspace(agg["inscripciones"].min(), agg["inscripciones"].max(), 100).reshape(-1, 1)
-            y_line = model.predict(x_line)
+            x_line = np.linspace(agg["inscripciones"].min(), agg["inscripciones"].max(), 100)
+            y_line = slope * x_line + intercept
             ax1.plot(x_line, y_line)
             ax1.set_xlabel("Número de inscripciones (por asesor)")
             ax1.set_ylabel("Número de ventas (por asesor)")
@@ -242,9 +244,9 @@ if data_source:
             ax2.set_title("Diagrama de residuos")
             st.pyplot(fig2, use_container_width=True)
 
-            agg["ventas_pred_actual"] = (slope * agg["inscripciones"] + intercept).clip(lower=0)
+            agg["ventas_pred_actual"] = np.clip(slope * agg["inscripciones"] + intercept, a_min=0, a_max=None)
             agg["inscripciones_escenario"] = (agg["inscripciones"] * (1 + uplift/100.0)).round().astype(int)
-            agg["ventas_pred_escenario"] = (slope * agg["inscripciones_escenario"] + intercept).clip(lower=0)
+            agg["ventas_pred_escenario"] = np.clip(slope * agg["inscripciones_escenario"] + intercept, a_min=0, a_max=None)
 
             st.subheader(f"Proyección por asesor (escenario +{uplift}%)")
             st.dataframe(
