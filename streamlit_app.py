@@ -4,9 +4,21 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.metrics import r2_score
 import matplotlib.pyplot as plt
 from pathlib import Path
+
+# Compatibilidad para RMSE sin warnings
+try:
+    from sklearn.metrics import root_mean_squared_error as _rmse_fn
+    def RMSE(y_true, y_pred):
+        return _rmse_fn(y_true, y_pred)
+except Exception:
+    from sklearn.metrics import mean_squared_error as _mse_fn
+    import numpy as np
+    def RMSE(y_true, y_pred):
+        return np.sqrt(_mse_fn(y_true, y_pred))
+
 
 st.set_page_config(page_title="Inscripciones vs Ventas por Asesor", layout="wide")
 st.markdown(
@@ -15,6 +27,7 @@ st.markdown(
 )
 st.title("Inscripciones vs Ventas por Asesor — Análisis y Proyección")
 st.caption("Programa: Ingeniería de Sistemas y Computación • Asignatura: Business Intelligence")
+st.caption("Alumno: Fabián Valero • Docente: Ivon Forero")
 
 @st.cache_data(show_spinner=False)
 def load_excel(file_bytes_or_path):
@@ -199,7 +212,7 @@ if data_source:
             y_pred = model.predict(X)
 
             r2 = r2_score(y, y_pred)
-            rmse = mean_squared_error(y, y_pred, squared=False)
+            rmse = RMSE(y, y_pred)
             slope = float(model.coef_[0])
             intercept = float(model.intercept_)
 
